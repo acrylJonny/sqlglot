@@ -2162,6 +2162,9 @@ class JoinHint(Expression):
     arg_types = {"this": True, "expressions": True}
 
 
+class TableHint(Expression):
+    arg_types = {"this": True, "expressions": True}
+
 class Identifier(Expression):
     arg_types = {"this": True, "quoted": False, "global": False, "temporary": False}
 

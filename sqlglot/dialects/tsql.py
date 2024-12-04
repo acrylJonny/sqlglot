@@ -377,6 +377,8 @@ class TSQL(Dialect):
     CONCAT_COALESCE = True
     NORMALIZATION_STRATEGY = NormalizationStrategy.CASE_INSENSITIVE
 
+    TABLE_HINTS = True
+
     TIME_FORMAT = "'yyyy-mm-dd hh:mm:ss'"
 
     TIME_MAPPING = {
@@ -499,21 +501,31 @@ class TSQL(Dialect):
             "FOR SYSTEM_TIME": TokenType.TIMESTAMP_SNAPSHOT,
             "IMAGE": TokenType.IMAGE,
             "MONEY": TokenType.MONEY,
+            "NOLOCK": TokenType.HINT,
             "NONCLUSTERED INDEX": TokenType.INDEX,
             "NTEXT": TokenType.TEXT,
             "OPTION": TokenType.OPTION,
             "OUTPUT": TokenType.RETURNING,
+            "PAGLOCK": TokenType.HINT,
             "PRINT": TokenType.COMMAND,
             "PROC": TokenType.PROCEDURE,
+            "READCOMMITTED": TokenType.HINT,
+            "READPAST": TokenType.HINT,
+            "READUNCOMMITTED": TokenType.HINT,
             "REAL": TokenType.FLOAT,
+            "ROWLOCK": TokenType.HINT,
             "ROWVERSION": TokenType.ROWVERSION,
+            "SERIALIZABLE": TokenType.HINT,
             "SMALLDATETIME": TokenType.DATETIME,
             "SMALLMONEY": TokenType.SMALLMONEY,
             "SQL_VARIANT": TokenType.VARIANT,
             "SYSTEM_USER": TokenType.CURRENT_USER,
+            "TABLOCK": TokenType.HINT,
+            "TABLOCKX": TokenType.HINT,
             "TOP": TokenType.TOP,
             "TIMESTAMP": TokenType.ROWVERSION,
             "TINYINT": TokenType.UTINYINT,
+            "UPDLOCK": TokenType.HINT,
             "UNIQUEIDENTIFIER": TokenType.UNIQUEIDENTIFIER,
             "UPDATE STATISTICS": TokenType.COMMAND,
             "XML": TokenType.XML,
@@ -570,6 +582,19 @@ class TSQL(Dialect):
             "SUSER_SNAME": exp.CurrentUser.from_arg_list,
             "SYSTEM_USER": exp.CurrentUser.from_arg_list,
             "TIMEFROMPARTS": _build_timefromparts,
+        }
+
+        TABLE_HINT_TOKENS = {
+            "NOLOCK",
+            "PAGLOCK",
+            "READCOMMITTED",
+            "READPAST",
+            "READUNCOMMITTED",
+            "ROWLOCK",
+            "SERIALIZABLE",
+            "TABLOCK",
+            "TABLOCKX",
+            "UPDLOCK",
         }
 
         JOIN_HINTS = {"LOOP", "HASH", "MERGE", "REMOTE"}
@@ -830,6 +855,35 @@ class TSQL(Dialect):
 
             return self.expression(exp.DeclareItem, this=var, kind=data_type, default=value)
 
+        def _parse_hints(self) -> t.Optional[exp.Expression]:
+            """Parse SQL Server WITH (NOLOCK) style hints"""
+            if not self._match(TokenType.WITH):
+                return None
+
+            if not self._match(TokenType.L_PAREN):
+                return None
+
+            hints = []
+            while True:
+                if self._match_set(self.TABLE_HINT_TOKENS):
+                    hints.append(exp.TableHint(this=self._prev.text))
+
+                if not self._match(TokenType.COMMA):
+                    break
+
+            self._match(TokenType.R_PAREN)
+            return exp.TableHint(expressions=hints) if hints else None
+
+        # Modify your existing _parse_table_factor method
+        def _parse_table_factor(self) -> t.Optional[exp.Expression]:
+            """Add hint parsing to existing _parse_table_factor"""
+            table = super()._parse_table_factor()
+            if table:
+                hints = self._parse_hints()
+                if hints:
+                    table.set("hints", hints)
+            return table
+
     class Generator(generator.Generator):
         LIMIT_IS_TOP = True
         QUERY_HINTS = False
@@ -929,6 +983,7 @@ class TSQL(Dialect):
             exp.SHA2: lambda self, e: self.func(
                 "HASHBYTES", exp.Literal.string(f"SHA2_{e.args.get('length', 256)}"), e.this
             ),
+            exp.TableHint: lambda self, e: e.this,
             exp.TemporaryProperty: lambda self, e: "",
             exp.TimeStrToTime: _timestrtotime_sql,
             exp.TimeToStr: _format_sql,
@@ -1008,6 +1063,14 @@ class TSQL(Dialect):
             return self.func(
                 "PARSENAME", this, exp.Literal.number(split_count + 1 - part_index.to_py())
             )
+
+        def table_sql(self, expression: exp.Table, sep: str = " AS ") -> str:
+            """Add hint support to table SQL generation"""
+            sql = super().table_sql(expression)
+            hints = expression.args.get("hints")
+            if hints and isinstance(hints, exp.Expression):
+                sql = f"{sql} WITH ({self.expressions(hints, flat=True)})"
+            return sql
 
         def timefromparts_sql(self, expression: exp.TimeFromParts) -> str:
             nano = expression.args.get("nano")
